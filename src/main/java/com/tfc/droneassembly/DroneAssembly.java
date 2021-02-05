@@ -1,10 +1,14 @@
 package com.tfc.droneassembly;
 
 import com.tfc.droneassembly.client.ClientSetup;
+import com.tfc.droneassembly.client.CollisionDebugRenderer;
+import com.tfc.droneassembly.common.ServerLifeCycleHandler;
+import com.tfc.droneassembly.common.ServerTickHandler;
 import com.tfc.droneassembly.registries.PartRegistryBuilder;
 import com.tfc.droneassembly.registry.DronePartRegistry;
 import com.tfc.droneassembly.registry.EntityRegistry;
 import net.minecraft.entity.ai.attributes.GlobalEntityTypeAttributes;
+import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.event.RegistryEvent;
 import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.fml.event.lifecycle.FMLCommonSetupEvent;
@@ -26,10 +30,18 @@ public class DroneAssembly {
 		
 		if (FMLEnvironment.dist.isClient()) {
 			FMLJavaModLoadingContext.get().getModEventBus().addListener(ClientSetup::onSetup);
+			MinecraftForge.EVENT_BUS.addListener(CollisionDebugRenderer::renderWorldLast);
 		}
 		
 		FMLJavaModLoadingContext.get().getModEventBus().addListener(DroneAssembly::createRegistries);
 		FMLJavaModLoadingContext.get().getModEventBus().addListener(DroneAssembly::onCommonSetup);
+		
+		MinecraftForge.EVENT_BUS.addListener(ServerLifeCycleHandler::onAboutToStart);
+		MinecraftForge.EVENT_BUS.addListener(ServerLifeCycleHandler::onStarted);
+		MinecraftForge.EVENT_BUS.addListener(ServerLifeCycleHandler::onStarting);
+		MinecraftForge.EVENT_BUS.addListener(ServerLifeCycleHandler::onStopping);
+		MinecraftForge.EVENT_BUS.addListener(ServerLifeCycleHandler::onStopped);
+		MinecraftForge.EVENT_BUS.addListener(ServerTickHandler::onTick);
 	}
 	
 	public static void createRegistries(RegistryEvent.NewRegistry event) {

@@ -6,4 +6,9 @@ public class CorePart extends DronePart {
 	public DronePartRenderer getRenderer() {
 		return renderer;
 	}
+	
+	@Override
+	public float calcMass() {
+		return super.calcMass()*2;
+	}
 }

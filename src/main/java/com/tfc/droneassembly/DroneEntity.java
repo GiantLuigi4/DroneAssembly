@@ -2,14 +2,19 @@ package com.tfc.droneassembly;
 
 import com.tfc.assortedutils.API.entities.IVoxelShapeEntity;
 import com.tfc.assortedutils.API.entities.VoxelShapeEntityRaytraceResult;
+import com.tfc.assortedutils.API.nbt.ExtendedCompoundNBT;
+import com.tfc.assortedutils.API.raytracing.RotatedVoxelShape;
+import com.tfc.assortedutils.API.transformations.quaternion.QuaternionHelper;
 import com.tfc.droneassembly.parts.DronePart;
 import com.tfc.droneassembly.registries.DroneParts;
+import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
 import net.minecraft.client.Minecraft;
 import net.minecraft.entity.*;
 import net.minecraft.entity.ai.attributes.AttributeModifierMap;
 import net.minecraft.entity.ai.attributes.Attributes;
 import net.minecraft.entity.monster.MonsterEntity;
+import net.minecraft.entity.monster.SlimeEntity;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.inventory.EquipmentSlotType;
 import net.minecraft.item.ItemStack;
@@ -22,22 +27,26 @@ import net.minecraft.util.*;
 import net.minecraft.util.math.AxisAlignedBB;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.BlockRayTraceResult;
+import net.minecraft.util.math.shapes.IBooleanFunction;
 import net.minecraft.util.math.shapes.VoxelShape;
 import net.minecraft.util.math.shapes.VoxelShapes;
-import net.minecraft.util.math.vector.Matrix4f;
+import net.minecraft.util.math.vector.Quaternion;
 import net.minecraft.util.math.vector.Vector3d;
 import net.minecraft.world.World;
 import net.minecraftforge.common.util.Constants;
+import net.minecraftforge.fml.common.ObfuscationReflectionHelper;
 import net.minecraftforge.fml.loading.FMLEnvironment;
 import org.jetbrains.annotations.NotNull;
 
 import javax.annotation.Nullable;
+import javax.vecmath.Quat4f;
+import javax.vecmath.Vector3f;
+import java.lang.reflect.Field;
 import java.util.ArrayList;
+import java.util.Map;
 
 public class DroneEntity extends LivingEntity implements IVoxelShapeEntity {
 	public static final DataParameter<CompoundNBT> dronePartParameter = EntityDataManager.createKey(DroneEntity.class, DataSerializers.COMPOUND_NBT);
-	
-	private Vector3d lastMotion = Vector3d.ZERO;
 	
 	public DroneEntity(EntityType<? extends LivingEntity> type, World worldIn) {
 		super(type, worldIn);
@@ -88,27 +97,42 @@ public class DroneEntity extends LivingEntity implements IVoxelShapeEntity {
 	
 	@Override
 	public void resetPositionToBB() {
-		AxisAlignedBB newBB = this.getBoundingBox();
-		if (oldBox == null) {
-			oldBox = newBB;
-			return;
-		}
-		Vector3d oldCenter = oldBox.getCenter();
-		Vector3d newCenter = newBB.getCenter();
-		this.setPosition(
-				this.getPositionVec().x,
-				newBB.minY,
-				this.getPositionVec().z
-		);
-		oldBox = newBB;
+//		AxisAlignedBB newBB = this.getBoundingBox();
+//		if (oldBox == null) {
+//			oldBox = newBB;
+//			return;
+//		}
+//		Vector3d oldCenter = oldBox.getCenter();
+//		Vector3d newCenter = newBB.getCenter();
+//		this.setPosition(
+//				this.getPositionVec().x,
+//				newBB.minY,
+//				this.getPositionVec().z
+//		);
+//		oldBox = newBB;
 	}
 	
 	public CompoundNBT getPartData() {
-		return this.getDataManager().get(dronePartParameter);
+		return dataManager.get(dronePartParameter);
 	}
 	
 	public void setPartData(CompoundNBT nbt) {
-		this.getDataManager().set(dronePartParameter, nbt);
+		this.dataManager.set(dronePartParameter, nbt);
+		try {
+ 			Field field = ObfuscationReflectionHelper.findField(EntityDataManager.class,"field_187237_f");
+			Field field2 = ObfuscationReflectionHelper.findField(EntityDataManager.class,"field_187234_c");
+			field.setAccessible(true);
+			field2.setAccessible(true);
+			field.set(this.dataManager,true);
+			
+			((Map<Integer, EntityDataManager.DataEntry<?>>)field2.get(this.dataManager)).forEach((id,entry)->{
+				if (entry.getKey().equals(dronePartParameter)) {
+					entry.setDirty(true);
+				}
+			});
+		} catch (Throwable ignored) {
+			ignored.printStackTrace();
+		}
 	}
 	
 	public void addPart(CompoundNBT nbt) {
@@ -182,28 +206,65 @@ public class DroneEntity extends LivingEntity implements IVoxelShapeEntity {
 	@Override
 	public VoxelShape getRaytraceShape() {
 		VoxelShape shape = prevShape;
-		if (!prevNBT.equals(this.getPartData()) || prevShape == null) {
+		if (prevNBT != null && !prevNBT.equals(this.getPartData())) {
+			prevShape = null;
+			shape = null;
 			ListNBT parts = this.getPartData().getList("parts", Constants.NBT.TAG_COMPOUND);
 			for (int i = 0; i < parts.size(); i++) {
 				CompoundNBT partNBT = parts.getCompound(i);
 				DronePart part = DroneParts.get(partNBT.getString("name"));
 				part.load(partNBT);
-				if (shape == null) shape = part.getShape();
+				if (shape == null) shape = part.getShape().withOffset(part.x / 4f, part.y / 4f, part.z / 4f);
 				else shape = VoxelShapes.or(shape, part.getShape().withOffset(part.x / 4f, part.y / 4f, part.z / 4f));
 			}
-			prevNBT = this.getPartData();
+			prevNBT = this.getPartData().copy();
+			prevShape = shape;
+			if (prevShape != null) prevShape = new RotatedVoxelShape(prevShape);
+			BulletPhysicsWorldCache.INSTANCE.remove(this);
+		}
+		if (prevShape instanceof RotatedVoxelShape) {
+			if (BulletPhysicsWorldCache.INSTANCE.has(this)) ((RotatedVoxelShape)prevShape).rotation = BulletPhysicsWorldCache.INSTANCE.getRotation(this);
+			else ((RotatedVoxelShape)prevShape).rotation = this.getRotation();
 		}
 		return shape;
 	}
 	
+	//TODO: figure out some way to cache this
+	public VoxelShape getTerrainShape() {
+		AxisAlignedBB bb = this.getBoundingBox();
+		VoxelShape shape = null;
+		ArrayList<BlockPos> donePoses = new ArrayList<>();
+		for (int x = (int) (bb.minX - 2); x <= (int) (bb.maxX + 2); x += 1) {
+			for (int y = (int) (bb.minY - 2); y <= (int) (bb.maxY + 2); y += 1) {
+				for (int z = (int) (bb.minZ - 2); z <= (int) (bb.maxZ + 2); z += 1) {
+					BlockPos pos = new BlockPos(x, y, z);
+					if (!donePoses.contains(pos)) {
+						donePoses.add(pos);
+						BlockState state = world.getBlockState(pos);
+						if (!state.isAir() && state.isSolid()) {
+							if (shape == null) shape = state.getCollisionShape(world, pos).withOffset(x, y, z);
+							else
+								shape = VoxelShapes.combine(
+										shape,
+										state.getCollisionShape(world, pos).withOffset(x, y, z),
+										IBooleanFunction.OR
+								);
+						}
+					}
+				}
+			}
+		}
+		if (shape != null) return shape;
+		else return null;
+	}
+	
 	@Override
 	protected void doBlockCollisions() {
-		super.doBlockCollisions();
+//		super.doBlockCollisions();
 	}
 	
 	@Override
 	public void applyEntityCollision(@NotNull Entity entityIn) {
-//		super.applyEntityCollision(entityIn);
 	}
 	
 	@Override
@@ -215,13 +276,13 @@ public class DroneEntity extends LivingEntity implements IVoxelShapeEntity {
 		} catch (Throwable ignored) {
 		}
 		bb = bb.offset(this.getPositionVec().subtract(0.125f, 0, 0).x, this.getPositionVec().y, this.getPositionVec().subtract(0, 0, 0.125f).z);
-		if (
-				super.getBoundingBox().maxX - super.getBoundingBox().minX != bb.maxX - bb.minX ||
-						super.getBoundingBox().maxY - super.getBoundingBox().minY != bb.maxY - bb.minY ||
-						super.getBoundingBox().maxZ - super.getBoundingBox().minZ != bb.maxZ - bb.minZ
-		)
-			this.setBoundingBox(bb);
-		return super.getBoundingBox();
+//		if (
+//				super.getBoundingBox().maxX - super.getBoundingBox().minX != bb.maxX - bb.minX ||
+//						super.getBoundingBox().maxY - super.getBoundingBox().minY != bb.maxY - bb.minY ||
+//						super.getBoundingBox().maxZ - super.getBoundingBox().minZ != bb.maxZ - bb.minZ
+//		)
+//			return bb;
+		return bb;
 	}
 	
 	@Override
@@ -237,58 +298,27 @@ public class DroneEntity extends LivingEntity implements IVoxelShapeEntity {
 		
 		if (this.world.isRemote) return;
 		
-		Vector3d oldPos = this.getPositionVec();
+		VoxelShape terrainShape = getTerrainShape();
+//		VoxelShape terrainShape = null;
+		if (terrainShape == null) {
+			BulletPhysicsWorldCache.INSTANCE.remove(this);
+			return;
+		}
 		
-//		if (!lastMotion.equals(this.getMotion()) &&
-//				(lastMotion.y <= 0 && lastMotion.z <= 0 && lastMotion.x <= 0)
-//		) {
-//			CompoundNBT partData = this.getPartData();
-//			ListNBT partList = partData.getList("parts", Constants.NBT.TAG_COMPOUND);
-//
-//			for (int i = 0; i < partList.size(); i++) {
-//				CompoundNBT partNBT = partList.getCompound(i);
-//				DronePart part = DroneParts.get(partNBT.getString("name"));
-//				part.load(partNBT);
-//				BlockPos pos = new BlockPos(
-//						part.x / 4f + this.getPositionVec().x,
-//						part.y / 4f + this.getPositionVec().y,
-//						part.z / 4f + this.getPositionVec().z
-//				);
-//				for (AxisAlignedBB bb : part.getShape().withOffset(this.getPositionVec().getX(),this.getPositionVec().y,this.getPositionVec().z).withOffset(part.x / 4f, part.y / 4f, part.z / 4f).toBoundingBoxList()) {
-//					for (AxisAlignedBB bb1 : world.getBlockState(pos).getShape(world,pos).withOffset(pos.getX(),pos.getY(),pos.getZ()).toBoundingBoxList()) {
-//						if (bb.intersects(bb1)) {
-//							this.removePart(new BlockPos(part.x,part.y,part.z));
-//							break;
-//						}
-//					}
-//				}
-//			}
-//
-//			Vector3d newPos = this.getPositionVec().add(this.getMotion());
-//			this.setPosition(newPos.x,newPos.y,newPos.z);
-//
-//			for (int i = 0; i < partList.size(); i++) {
-//				CompoundNBT partNBT = partList.getCompound(i);
-//				DronePart part = DroneParts.get(partNBT.getString("name"));
-//				part.load(partNBT);
-//				BlockPos pos = new BlockPos(
-//						part.x / 4f + this.getPositionVec().x,
-//						part.y / 4f + this.getPositionVec().y,
-//						part.z / 4f + this.getPositionVec().z
-//				);
-//				for (AxisAlignedBB bb : part.getShape().withOffset(this.getPositionVec().getX(),this.getPositionVec().y,this.getPositionVec().z).withOffset(part.x / 4f, part.y / 4f, part.z / 4f).toBoundingBoxList()) {
-//					for (AxisAlignedBB bb1 : world.getBlockState(pos).getShape(world,pos).withOffset(pos.getX(),pos.getY(),pos.getZ()).toBoundingBoxList()) {
-//						if (bb.intersects(bb1)) {
-//							this.setPosition(oldPos.x,oldPos.y+0,oldPos.z);
-//							this.setMotion(0,0,0);
-//							break;
-//						}
-//					}
-//				}
-//			}
-//		}
+		if (BulletPhysicsWorldCache.INSTANCE.has(this)) {
+			setPosition(BulletPhysicsWorldCache.INSTANCE.getPosition(this));
+			Quaternion quaternion = BulletPhysicsWorldCache.INSTANCE.getRotation(this);
+			quaternion.normalize();
+			this.setRotation(quaternion);
+		} else
+			BulletPhysicsWorldCache.INSTANCE.add(this);
 		
-		lastMotion = this.getMotion();
+		if (terrainShape != null)
+			BulletPhysicsWorldCache.INSTANCE.add(this.world.getDimensionKey(),terrainShape);
+	}
+	
+	public void setPosition(Vector3d newPos) {
+		this.setPosition(newPos.x,newPos.y,newPos.z);
 	}
 	
 	@Override
@@ -305,8 +335,25 @@ public class DroneEntity extends LivingEntity implements IVoxelShapeEntity {
 	@Override
 	public void readAdditional(@NotNull CompoundNBT compound) {
 		super.readAdditional(compound);
-		if (compound.contains("parts")) this.setPartData(compound.getCompound("parts"));
-		else this.setPartData(getDefaultNBT());
+		if (!this.world.isRemote) {
+			if (compound.contains("parts")) this.setPartData(compound.getCompound("parts"));
+			else this.setPartData(getDefaultNBT());
+		}
+	}
+	
+	public float calcMass() {
+		float mass = 0;
+		
+		CompoundNBT partData = this.getPartData();
+		ListNBT partList = partData.getList("parts", Constants.NBT.TAG_COMPOUND);
+		for (int i = partList.size() - 1; i > 0; i--) {
+			CompoundNBT partNBT = partList.getCompound(i);
+			DronePart part = DroneParts.get(partNBT.getString("name"));
+			part.load(partNBT);
+			mass += part.calcMass();
+		}
+		
+		return mass;
 	}
 	
 	@Override
@@ -322,7 +369,7 @@ public class DroneEntity extends LivingEntity implements IVoxelShapeEntity {
 	
 	@Override
 	public ActionResultType onInteract(PlayerEntity player, @NotNull VoxelShapeEntityRaytraceResult result) {
-		System.out.println(result.getDir());
+//		System.out.println(result.getDir());
 		Vector3d pos = result.getHitVec().subtract(result.getEntity().getPositionVec()).scale(4);
 		BlockPos hitPos = new BlockPos(
 				Math.round(pos.x),
@@ -335,10 +382,20 @@ public class DroneEntity extends LivingEntity implements IVoxelShapeEntity {
 		else if (result.getDir() == Direction.UP) hitPos = hitPos.down();
 		hitPos = hitPos.offset(result.getDir());
 		
-		System.out.println(hitPos);
+//		System.out.println(hitPos);
 
-		if (!containsPart(hitPos))
+		if (!containsPart(hitPos) && !world.isRemote)
 			addPart("drone_assembly:basic_part", 0.5f, 0.5f, 0.5f, hitPos.getX(), hitPos.getY(), hitPos.getZ());
+		System.out.println(dataManager.isDirty());
+		if (dataManager.getAll() != null) {
+			for (EntityDataManager.DataEntry<?> entry : dataManager.getAll()) {
+				if (entry.getKey().getId() == dronePartParameter.getId()) {
+//					entry.setDirty(true);
+					System.out.println(entry.isDirty());
+				}
+			}
+		}
+		System.out.println(dataManager.isDirty());
 		
 		return ActionResultType.SUCCESS;
 	}
@@ -406,7 +463,7 @@ public class DroneEntity extends LivingEntity implements IVoxelShapeEntity {
 		for (int i : toRemove)
 			partList.remove(i);
 		partData.put("parts", partList);
-		setPartData(partData);
+		if (!world.isRemote) setPartData(partData);
 		return !toRemove.isEmpty();
 	}
 	
@@ -437,5 +494,59 @@ public class DroneEntity extends LivingEntity implements IVoxelShapeEntity {
 		} catch (Throwable ignored) {
 		}
 		return new EntitySize((float) Math.min(bb.maxX - bb.minX, bb.maxZ - bb.minZ), (float) (bb.maxY - bb.minY), false);
+	}
+	
+	public Vector3f getPos() {
+		return new Vector3f(
+				(float) this.getPosX(),
+				(float) this.getPosY(),
+				(float) this.getPosZ()
+		);
+	}
+	
+	public void setRotation(Quaternion quaternion) {
+		ExtendedCompoundNBT partData = new ExtendedCompoundNBT(this.getPartData(),true);
+		partData.putQuaternion("rotation",quaternion);
+		setPartData(this.getPartData());
+	}
+	
+	public void setRotation(Quat4f quaternion) {
+		setRotation(new Quaternion(quaternion.x, quaternion.y, quaternion.z, quaternion.w));
+	}
+	
+	public Quaternion getRotation() {
+		CompoundNBT partData = this.getPartData();
+		if (partData.contains("rotation")) {
+			Quaternion quaternion = new ExtendedCompoundNBT(partData,true).getQuaternion("rotation");
+			return quaternion;
+		} else {
+			return QuaternionHelper.fromAngles(0,0,0,false);
+		}
+	}
+	
+	public Quat4f getRotationAsQuat4f() {
+		Quaternion quaternion = getRotation();
+		return new Quat4f(
+				quaternion.getX(),
+				quaternion.getY(),
+				quaternion.getZ(),
+				quaternion.getW()
+		);
+	}
+	
+	/**
+	 * Returns true if other Entities should be prevented from moving through this Entity.
+	 */
+	@Override
+	public boolean canBeCollidedWith() {
+		return true;
+	}
+	
+	/**
+	 * Returns true if this entity should push and be pushed by other entities when colliding.
+	 */
+	@Override
+	public boolean canBePushed() {
+		return false;
 	}
 }

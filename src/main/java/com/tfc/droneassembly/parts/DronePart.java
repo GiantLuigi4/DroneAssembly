@@ -71,4 +71,8 @@ public class DronePart implements IForgeRegistryEntry<DronePart> {
 		part.putDouble("z", z);
 		return part;
 	}
+	
+	public float calcMass() {
+		return 0.1f;
+	}
 }
